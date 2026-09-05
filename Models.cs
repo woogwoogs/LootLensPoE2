@@ -35,8 +35,14 @@ public enum RuleProfileKind
 
 public enum QualificationRulesMode
 {
-    HcCampaign,
+    Campaign,
     Custom
+}
+
+public enum CampaignBuildPreset
+{
+    LifeAndResists,
+    EvasionAndEnergyShield
 }
 
 public enum CampaignStageSelection
@@ -70,7 +76,8 @@ public enum MandatoryQualificationRule
     LifeOrDefence,
     MovementSpeed,
     TotalWeaponDps,
-    CasterPower
+    CasterPower,
+    EvasionAndEnergyShield
 }
 
 public sealed class QualificationProfile
@@ -93,6 +100,8 @@ public sealed class QualificationProfile
     public int MinimumFlatArmour { get; set; }
     public int MinimumArmourPercent { get; set; }
     public int MinimumArmourAppliesToElementalDamage { get; set; }
+    public int MinimumEnergyShieldMods { get; set; }
+    public int MinimumEvasionEnergyShieldMods { get; set; }
     public int MinimumAttributes { get; set; }
     public int MinimumAttackSpeed { get; set; }
     public int MinimumCastSpeed { get; set; }
@@ -183,6 +192,8 @@ internal struct StatSnapshot
     public int ArmourPercent;
     public int EvasionPercent;
     public int EnergyShieldPercent;
+    public int EnergyShieldMods;
+    public int EvasionEnergyShieldMods;
     public int Strength;
     public int Dexterity;
     public int Intelligence;

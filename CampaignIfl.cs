@@ -20,8 +20,10 @@ internal static class CampaignIfl
         int TotalDps,
         int CriticalChance);
 
-    private static readonly IReadOnlyDictionary<CampaignStage,
-        IReadOnlyDictionary<string, QualificationProfile>> Profiles = BuildProfiles();
+    private static readonly IReadOnlyDictionary<CampaignBuildPreset,
+        IReadOnlyDictionary<CampaignStage,
+            IReadOnlyDictionary<string, QualificationProfile>>> ProfileSets =
+        BuildProfileSets();
 
     public static CampaignStage FromLevel(int level) => level switch
     {
@@ -50,14 +52,20 @@ internal static class CampaignIfl
 
     public static string Label(CampaignStage stage) => stage switch
     {
-        CampaignStage.Act1 => "ACT 1 HC IFL",
-        CampaignStage.Act2 => "ACT 2 HC IFL",
-        CampaignStage.Act3 => "ACT 3 HC IFL",
-        CampaignStage.Act4 => "ACT 4 HC IFL",
-        CampaignStage.Interlude1 => "INTERLUDE I HC IFL",
-        CampaignStage.Interlude2 => "INTERLUDE II HC IFL",
-        CampaignStage.Interlude3 => "INTERLUDE III HC IFL",
-        _ => "EARLY MAPS HC IFL"
+        CampaignStage.Act1 => "ACT 1 IFL",
+        CampaignStage.Act2 => "ACT 2 IFL",
+        CampaignStage.Act3 => "ACT 3 IFL",
+        CampaignStage.Act4 => "ACT 4 IFL",
+        CampaignStage.Interlude1 => "INTERLUDE I IFL",
+        CampaignStage.Interlude2 => "INTERLUDE II IFL",
+        CampaignStage.Interlude3 => "INTERLUDE III IFL",
+        _ => "EARLY MAPS IFL"
+    };
+
+    public static string PresetLabel(CampaignBuildPreset preset) => preset switch
+    {
+        CampaignBuildPreset.EvasionAndEnergyShield => "Evasion + Energy Shield",
+        _ => "Life + Resists"
     };
 
     public static string SelectionLabel(CampaignStageSelection selection) =>
@@ -87,16 +95,19 @@ internal static class CampaignIfl
     };
 
     public static QualificationProfile? GetProfile(CampaignStage stage,
-        string slotName)
+        CampaignBuildPreset preset, string slotName)
     {
-        return Profiles.TryGetValue(stage, out var profiles) &&
+        return ProfileSets.TryGetValue(preset, out var stages) &&
+               stages.TryGetValue(stage, out var profiles) &&
                profiles.TryGetValue(slotName, out var profile)
             ? profile
             : null;
     }
 
     public static IReadOnlyList<QualificationProfile> GetProfiles(
-        CampaignStage stage) => Profiles.TryGetValue(stage, out var profiles)
+        CampaignStage stage, CampaignBuildPreset preset) =>
+        ProfileSets.TryGetValue(preset, out var stages) &&
+        stages.TryGetValue(stage, out var profiles)
         ? profiles.Values.ToList()
         : [];
 
@@ -108,11 +119,19 @@ internal static class CampaignIfl
             MandatoryQualificationRule.TotalWeaponDps => "TOTAL DPS",
             MandatoryQualificationRule.CasterPower =>
                 "SPELL DAMAGE OR SKILL LEVEL",
+            MandatoryQualificationRule.EvasionAndEnergyShield => "EVASION + ES",
             _ => string.Empty
         };
 
+    private static IReadOnlyDictionary<CampaignBuildPreset,
+        IReadOnlyDictionary<CampaignStage,
+            IReadOnlyDictionary<string, QualificationProfile>>> BuildProfileSets() =>
+        Enum.GetValues<CampaignBuildPreset>().ToDictionary(
+            preset => preset, BuildProfiles);
+
     private static IReadOnlyDictionary<CampaignStage,
-        IReadOnlyDictionary<string, QualificationProfile>> BuildProfiles()
+        IReadOnlyDictionary<string, QualificationProfile>> BuildProfiles(
+            CampaignBuildPreset preset)
     {
         var values = new Dictionary<CampaignStage, StageValues>
         {
@@ -128,20 +147,34 @@ internal static class CampaignIfl
 
         return values.ToDictionary(pair => pair.Key,
             pair => (IReadOnlyDictionary<string, QualificationProfile>)
-                CreateProfiles(pair.Key, pair.Value).ToDictionary(
+                CreateProfiles(pair.Key, pair.Value, preset).ToDictionary(
                     profile => profile.Name, StringComparer.OrdinalIgnoreCase));
     }
 
     private static IEnumerable<QualificationProfile> CreateProfiles(
-        CampaignStage stage, StageValues value)
+        CampaignStage stage, StageValues value, CampaignBuildPreset preset)
     {
         var skillLevel = (int)stage >= (int)CampaignStage.Act2 ? 1 : 0;
 
-        yield return GeneralGear("Helmet", RuleProfileKind.Armour, value);
-        yield return GeneralGear("Body Armour", RuleProfileKind.Armour, value);
-        yield return GeneralGear("Gloves", RuleProfileKind.Armour, value);
-        yield return GeneralGear("Boots", RuleProfileKind.Boots, value,
-            movementSpeed: value.MovementSpeed);
+        if (preset == CampaignBuildPreset.EvasionAndEnergyShield)
+        {
+            yield return EvasionEnergyShieldGear("Helmet", RuleProfileKind.Armour,
+                value);
+            yield return EvasionEnergyShieldGear("Body Armour",
+                RuleProfileKind.Armour, value);
+            yield return EvasionEnergyShieldGear("Gloves", RuleProfileKind.Armour,
+                value);
+            yield return EvasionEnergyShieldGear("Boots", RuleProfileKind.Boots,
+                value, movementSpeed: value.MovementSpeed);
+        }
+        else
+        {
+            yield return GeneralGear("Helmet", RuleProfileKind.Armour, value);
+            yield return GeneralGear("Body Armour", RuleProfileKind.Armour, value);
+            yield return GeneralGear("Gloves", RuleProfileKind.Armour, value);
+            yield return GeneralGear("Boots", RuleProfileKind.Boots, value,
+                movementSpeed: value.MovementSpeed);
+        }
         yield return new QualificationProfile
         {
             Name = "Shield",
@@ -150,9 +183,9 @@ internal static class CampaignIfl
             MinimumFlatArmour = 1,
             MinimumArmourPercent = 1
         };
-        yield return GeneralGear("Belt", RuleProfileKind.Jewellery, value);
-        yield return GeneralGear("Ring", RuleProfileKind.Jewellery, value);
-        yield return GeneralGear("Amulet", RuleProfileKind.Jewellery, value);
+        yield return Jewellery("Belt", value, preset);
+        yield return Jewellery("Ring", value, preset);
+        yield return Jewellery("Amulet", value, preset);
         yield return GeneralGear("Quiver", RuleProfileKind.Quiver, value);
         yield return new QualificationProfile
         {
@@ -193,6 +226,41 @@ internal static class CampaignIfl
             MinimumChaosResistance = value.ChaosResistance,
             MinimumMovementSpeed = movementSpeed,
             MinimumArmourAppliesToElementalDamage = 1
+        };
+
+    private static QualificationProfile EvasionEnergyShieldGear(string name,
+        RuleProfileKind kind, StageValues value, int movementSpeed = 0) => new()
+        {
+            Name = name,
+            Kind = kind,
+            RequiredMatches = movementSpeed > 0 ? 3 : 2,
+            MandatoryRule = movementSpeed > 0
+                ? MandatoryQualificationRule.MovementSpeed
+                : MandatoryQualificationRule.EvasionAndEnergyShield,
+            MinimumLife = value.Life,
+            MinimumElementalResistancePerMod = value.ElementalResistance,
+            MinimumAllElementalResistance = value.AllElementalResistance,
+            MinimumChaosResistance = value.ChaosResistance,
+            MinimumMovementSpeed = movementSpeed,
+            MinimumEvasionEnergyShieldMods = 1
+        };
+
+    private static QualificationProfile Jewellery(string name, StageValues value,
+        CampaignBuildPreset preset) => new()
+        {
+            Name = name,
+            Kind = RuleProfileKind.Jewellery,
+            RequiredMatches = 2,
+            MinimumLife = value.Life,
+            MinimumElementalResistancePerMod = value.ElementalResistance,
+            MinimumAllElementalResistance = value.AllElementalResistance,
+            MinimumChaosResistance = value.ChaosResistance,
+            MinimumAttributes = preset == CampaignBuildPreset.EvasionAndEnergyShield
+                ? 1
+                : 0,
+            MinimumEnergyShieldMods = preset == CampaignBuildPreset.EvasionAndEnergyShield
+                ? 1
+                : 0
         };
 
     private static QualificationProfile Weapon(string name, StageValues value,

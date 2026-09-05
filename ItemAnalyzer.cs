@@ -77,7 +77,7 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
         if (profile == null || !profile.Enabled)
             return false;
 
-        if (Settings.QualificationRules == QualificationRulesMode.HcCampaign &&
+        if (Settings.QualificationRules == QualificationRulesMode.Campaign &&
             mods.ItemRarity == ItemRarity.Unique)
             return false;
 
@@ -183,7 +183,7 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
 
     private void AnalyzeQualification(Entity item, Mods mods, AnalyzedItem result)
     {
-        if (Settings.QualificationRules == QualificationRulesMode.HcCampaign &&
+        if (Settings.QualificationRules == QualificationRulesMode.Campaign &&
             mods.ItemRarity == ItemRarity.Unique)
             return;
 
@@ -193,7 +193,7 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
 
         result.RequiredQualificationMatches = Math.Max(1, profile.RequiredMatches);
         result.QualificationRuleSet = Settings.QualificationRules ==
-                                      QualificationRulesMode.HcCampaign
+                                      QualificationRulesMode.Campaign
             ? CampaignIfl.Label(plugin.GetActiveCampaignStage())
             : "CUSTOM IFL";
         result.MandatoryQualificationLabel = CampaignIfl.MandatoryLabel(
@@ -211,8 +211,9 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
     private QualificationProfile? FindProfile(string? path)
     {
         var slot = GetSlotName(path);
-        if (Settings.QualificationRules == QualificationRulesMode.HcCampaign)
-            return CampaignIfl.GetProfile(plugin.GetActiveCampaignStage(), slot);
+        if (Settings.QualificationRules == QualificationRulesMode.Campaign)
+            return CampaignIfl.GetProfile(plugin.GetActiveCampaignStage(),
+                Settings.CampaignBuildPreset, slot);
 
         var customSlot = string.Equals(slot, "1H Mace",
             StringComparison.OrdinalIgnoreCase)
@@ -240,6 +241,10 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
              stats.SpellDamage >= profile.MinimumSpellDamage) ||
             (profile.MinimumSkillLevels > 0 &&
              stats.SkillLevels >= profile.MinimumSkillLevels),
+        MandatoryQualificationRule.EvasionAndEnergyShield =>
+            profile.MinimumEvasionEnergyShieldMods <= 0 ||
+            stats.EvasionEnergyShieldMods >=
+            profile.MinimumEvasionEnergyShieldMods,
         _ => true
     };
 
@@ -269,6 +274,10 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
         Add("INC ARMOUR", stats.ArmourPercent, profile.MinimumArmourPercent, "%");
         Add("ARMOUR TO ELE", stats.ArmourAppliesToElementalDamage,
             profile.MinimumArmourAppliesToElementalDamage, "%");
+        Add("ES MOD", stats.EnergyShieldMods, profile.MinimumEnergyShieldMods,
+            string.Empty);
+        Add("EV + ES", stats.EvasionEnergyShieldMods,
+            profile.MinimumEvasionEnergyShieldMods, string.Empty);
         Add("ATTRIBUTE", stats.BestAttribute, profile.MinimumAttributes, string.Empty);
         Add("ATTACK SPEED", stats.AttackSpeed, profile.MinimumAttackSpeed, "%");
         Add("CAST SPEED", stats.CastSpeed, profile.MinimumCastSpeed, "%");
@@ -356,6 +365,8 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
                 var values = itemMod.Values.ToArray();
                 var count = Math.Min(stats.Length, values.Length);
                 var hasAddedDamage = false;
+                var hasEvasion = false;
+                var hasEnergyShield = false;
                 for (var i = 0; i < count; i++)
                 {
                     var stat = stats[i];
@@ -384,6 +395,14 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
                     if (ContainsAll(key, "armour", "increased") || key.Contains("physical_damage_reduction_rating_+%")) result.ArmourPercent += value;
                     if (ContainsAll(key, "evasion", "increased") || key.Contains("evasion_rating_+%")) result.EvasionPercent += value;
                     if (ContainsAll(key, "energy", "shield", "increased") || key.Contains("energy_shield_+%")) result.EnergyShieldPercent += value;
+                    if (key.Contains("evasion", StringComparison.Ordinal) &&
+                        (key.Contains("local", StringComparison.Ordinal) ||
+                         key.Contains("evasion_rating", StringComparison.Ordinal)))
+                        hasEvasion = true;
+                    if (ContainsAll(key, "energy", "shield") &&
+                        (key.Contains("local", StringComparison.Ordinal) ||
+                         key.Contains("energy_shield", StringComparison.Ordinal)))
+                        hasEnergyShield = true;
                     if (ContainsAll(key, "runic", "ward", "increased") &&
                         !key.Contains("regeneration") && !key.Contains("recharge"))
                         result.RunicWardPercent += value;
@@ -420,6 +439,10 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
 
                 if (hasAddedDamage)
                     result.AddedDamageMods++;
+                if (hasEnergyShield)
+                    result.EnergyShieldMods++;
+                if (hasEvasion && hasEnergyShield)
+                    result.EvasionEnergyShieldMods++;
             }
         }
     }

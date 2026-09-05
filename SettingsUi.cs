@@ -82,11 +82,11 @@ public partial class LootLens2
         if (Settings.QualificationRules == QualificationRulesMode.Custom)
             DrawToggle("Check unique items", Settings.CheckUniqueItems);
         else
-            ImGui.TextDisabled("Unique items use drop tier and perfection; HC IFL checks are for magic and rare gear.");
+            ImGui.TextDisabled("Unique items use drop tier and perfection; campaign checks are for magic and rare gear.");
         DrawToggle("Show qualifying-stat footer", Settings.ShowQualificationFooter);
 
         ImGui.Spacing();
-        ImGui.TextWrapped("HC Campaign uses one acceptable-good baseline for each slot and campaign stage. Custom mode keeps the original editable threshold profiles.");
+        ImGui.TextWrapped("Campaign IFL uses one acceptable-good baseline for each slot and campaign stage. Custom mode keeps the original editable threshold profiles.");
     }
 
     private void DrawAnalyzerVisibilitySettings()
@@ -195,21 +195,21 @@ public partial class LootLens2
     {
         ImGui.Spacing();
         ImGui.Text("Rule set");
-        if (ImGui.RadioButton("HC Campaign##QualificationRules",
-                Settings.QualificationRules == QualificationRulesMode.HcCampaign))
-            Settings.QualificationRules = QualificationRulesMode.HcCampaign;
+        if (ImGui.RadioButton("Campaign IFL##QualificationRules",
+                Settings.QualificationRules == QualificationRulesMode.Campaign))
+            Settings.QualificationRules = QualificationRulesMode.Campaign;
         ImGui.SameLine();
         if (ImGui.RadioButton("Custom##QualificationRules",
                 Settings.QualificationRules == QualificationRulesMode.Custom))
             Settings.QualificationRules = QualificationRulesMode.Custom;
 
         ImGui.TextDisabled(Settings.QualificationRules ==
-                           QualificationRulesMode.HcCampaign
+                           QualificationRulesMode.Campaign
             ? "One slot-specific acceptable-good baseline per campaign stage."
             : "Your original editable match-count profiles.");
         ImGui.Spacing();
 
-        if (Settings.QualificationRules == QualificationRulesMode.HcCampaign)
+        if (Settings.QualificationRules == QualificationRulesMode.Campaign)
         {
             DrawCampaignRuleSettings();
             return;
@@ -296,10 +296,14 @@ public partial class LootLens2
             profile.MinimumTotalElementalResistance = DrawThreshold("Total Elemental Resistance", profile.MinimumTotalElementalResistance, 0, 240, "%");
             profile.MinimumChaosResistance = DrawThreshold("Chaos Resistance", profile.MinimumChaosResistance, 0, 80, "%");
             profile.MinimumAttributes = DrawThreshold("Best Attribute", profile.MinimumAttributes, 0, 100);
+            profile.MinimumEnergyShieldMods = DrawThreshold("Energy Shield Modifiers", profile.MinimumEnergyShieldMods, 0, 3);
         }
 
         if (profile.Kind is RuleProfileKind.Armour or RuleProfileKind.Boots)
+        {
             profile.MinimumDefencePercent = DrawThreshold("Best Local Defence Increase", profile.MinimumDefencePercent, 0, 250, "%");
+            profile.MinimumEvasionEnergyShieldMods = DrawThreshold("Evasion + ES Modifiers", profile.MinimumEvasionEnergyShieldMods, 0, 3);
+        }
 
         if (profile.Kind == RuleProfileKind.Boots)
             profile.MinimumMovementSpeed = DrawThreshold("Movement Speed", profile.MinimumMovementSpeed, 0, 40, "%");
@@ -354,6 +358,21 @@ public partial class LootLens2
 
     private void DrawCampaignRuleSettings()
     {
+        ImGui.Text("Campaign focus");
+        ImGui.SameLine();
+        if (ImGui.RadioButton("Life + Resists##CampaignFocus",
+                Settings.CampaignBuildPreset == CampaignBuildPreset.LifeAndResists))
+            Settings.CampaignBuildPreset = CampaignBuildPreset.LifeAndResists;
+        ImGui.SameLine();
+        if (ImGui.RadioButton("Evasion + ES##CampaignFocus",
+                Settings.CampaignBuildPreset == CampaignBuildPreset.EvasionAndEnergyShield))
+            Settings.CampaignBuildPreset = CampaignBuildPreset.EvasionAndEnergyShield;
+
+        ImGui.TextDisabled(Settings.CampaignBuildPreset ==
+                           CampaignBuildPreset.EvasionAndEnergyShield
+            ? "Dexterity/Intelligence armour requires an Evasion + ES modifier; jewellery may qualify with ES or an attribute."
+            : "Life and elemental-resistance baseline for general campaign gear.");
+        ImGui.Spacing();
         ImGui.Text("Campaign stage");
         ImGui.SameLine();
         ImGui.SetNextItemWidth(180f);
@@ -376,14 +395,16 @@ public partial class LootLens2
                 "  ·  LEVEL NOT DETECTED"
             : string.Empty;
         ImGui.TextColored(new Vector4(.32f, .86f, .48f, 1f),
-            $"ACTIVE  ·  {CampaignIfl.Label(activeStage)}  ·  " +
+            $"ACTIVE  ·  {CampaignIfl.PresetLabel(Settings.CampaignBuildPreset)}  ·  " +
+            $"{CampaignIfl.Label(activeStage)}  ·  " +
             $"{CampaignIfl.LevelBand(activeStage)}{detected}");
         if (Settings.CampaignStage == CampaignStageSelection.Automatic &&
             playerLevel <= 0)
             ImGui.TextDisabled("Automatic is using Act 1 until the player level is available. Select a stage manually if needed.");
 
         ImGui.Spacing();
-        var profiles = CampaignIfl.GetProfiles(activeStage);
+        var profiles = CampaignIfl.GetProfiles(activeStage,
+            Settings.CampaignBuildPreset);
         _selectedCampaignProfileIndex = Math.Clamp(
             _selectedCampaignProfileIndex, 0,
             Math.Max(0, profiles.Count - 1));
@@ -474,6 +495,10 @@ public partial class LootLens2
             profile.MinimumArmourPercent);
         DrawCampaignThreshold("Armour applies to Elemental Damage (any)",
             profile.MinimumArmourAppliesToElementalDamage);
+        DrawCampaignThreshold("Energy Shield modifier (any)",
+            profile.MinimumEnergyShieldMods);
+        DrawCampaignThreshold("Evasion + ES modifier (any)",
+            profile.MinimumEvasionEnergyShieldMods);
         DrawCampaignThreshold("Best Attribute", profile.MinimumAttributes);
         DrawCampaignThreshold("Attack Speed", profile.MinimumAttackSpeed, "%");
         DrawCampaignThreshold("Cast Speed", profile.MinimumCastSpeed, "%");

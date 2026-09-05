@@ -32,7 +32,9 @@ public sealed class LootLens2Settings : ISettings
     public ToggleNode CheckUniqueItems { get; set; } = new(false);
     public ToggleNode ShowQualificationFooter { get; set; } = new(true);
     public QualificationRulesMode QualificationRules { get; set; } =
-        QualificationRulesMode.HcCampaign;
+        QualificationRulesMode.Campaign;
+    public CampaignBuildPreset CampaignBuildPreset { get; set; } =
+        CampaignBuildPreset.LifeAndResists;
     public CampaignStageSelection CampaignStage { get; set; } =
         CampaignStageSelection.Automatic;
 
@@ -42,5 +44,5 @@ public sealed class LootLens2Settings : ISettings
     public RangeNode<int> MarkerSize { get; set; } = new(15, 10, 26);
 
     public List<QualificationProfile> Profiles { get; set; } = QualificationProfile.CreateDefaults();
-    public int SettingsVersion { get; set; } = 4;
+    public int SettingsVersion { get; set; } = 5;
 }

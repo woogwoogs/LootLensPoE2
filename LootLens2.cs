@@ -605,14 +605,14 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
         var normalized = ruleSet.Trim().ToUpperInvariant();
         return normalized switch
         {
-            "ACT 1 HC IFL" => "A1",
-            "ACT 2 HC IFL" => "A2",
-            "ACT 3 HC IFL" => "A3",
-            "ACT 4 HC IFL" => "A4",
-            "INTERLUDE I HC IFL" => "I1",
-            "INTERLUDE II HC IFL" => "I2",
-            "INTERLUDE III HC IFL" => "I3",
-            "EARLY MAPS HC IFL" => "MAPS",
+            "ACT 1 IFL" => "A1",
+            "ACT 2 IFL" => "A2",
+            "ACT 3 IFL" => "A3",
+            "ACT 4 IFL" => "A4",
+            "INTERLUDE I IFL" => "I1",
+            "INTERLUDE II IFL" => "I2",
+            "INTERLUDE III IFL" => "I3",
+            "EARLY MAPS IFL" => "MAPS",
             "CUSTOM IFL" => "CUSTOM",
             _ => normalized.Replace(" IFL", string.Empty,
                 StringComparison.OrdinalIgnoreCase)
@@ -648,6 +648,8 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
         "FLAT ARMOUR" => "FLAT ARM",
         "INC ARMOUR" => "INC ARM",
         "ARMOUR TO ELE" => "ARM TO ELE",
+        "ES MOD" => "ES",
+        "EV + ES" => "EV + ES",
         "ATTACK SPEED" => "ATK SPEED",
         "CAST SPEED" => "CAST SPEED",
         "SPELL DAMAGE" => "SPELL DMG",
@@ -1028,8 +1030,9 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
         hash.Add(Settings.PerfectionRange);
         hash.Add(Settings.QualificationRules);
         hash.Add(Settings.CampaignStage);
-        if (Settings.QualificationRules == QualificationRulesMode.HcCampaign)
+        if (Settings.QualificationRules == QualificationRulesMode.Campaign)
             hash.Add(GetActiveCampaignStage());
+        hash.Add(Settings.CampaignBuildPreset);
 
         foreach (var profile in Settings.Profiles ?? [])
         {
@@ -1048,6 +1051,8 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
             hash.Add(profile.MinimumFlatArmour);
             hash.Add(profile.MinimumArmourPercent);
             hash.Add(profile.MinimumArmourAppliesToElementalDamage);
+            hash.Add(profile.MinimumEnergyShieldMods);
+            hash.Add(profile.MinimumEvasionEnergyShieldMods);
             hash.Add(profile.MinimumAttributes);
             hash.Add(profile.MinimumAttackSpeed);
             hash.Add(profile.MinimumCastSpeed);
