@@ -335,10 +335,19 @@ internal sealed class ItemDatabase
         if (activeIndices.Length == 0)
             return -1;
 
+        var names = new HashSet<string>(new[]
+        {
+            Normalize(itemMod.Name), Normalize(itemMod.RawName),
+            Normalize(GetMemberString(record, "Name", "UserFriendlyName"))
+        }.Where(name => name.Length > 0), StringComparer.Ordinal);
+        var hasNamedTier = family.Tiers.Any(tier => names.Contains(Normalize(tier.Name)));
+
         for (var tierIndex = 0; tierIndex < family.Tiers.Count; tierIndex++)
         {
             var tier = family.Tiers[tierIndex];
             if (!AllowsBase(tier, tags))
+                continue;
+            if (hasNamedTier && !names.Contains(Normalize(tier.Name)))
                 continue;
 
             if (tier.Ranges.Count == 1 && activeIndices.Length > 1)
@@ -361,23 +370,33 @@ internal sealed class ItemDatabase
             if (tier.Ranges.Count != activeIndices.Length)
                 continue;
 
+            // Database text order need not match the game's stat order.
+            // Match each stored range to a distinct live stat, retaining that
+            // mapping for both current-tier and global roll calculations.
             var candidateScales = new double[activeIndices.Length];
-            var matched = true;
-            for (var index = 0; index < activeIndices.Length; index++)
+            var candidateIndices = new int[activeIndices.Length];
+            var used = new bool[activeIndices.Length];
+            bool MatchRanges(int index)
             {
-                var liveIndex = activeIndices[index];
-                if (!TryMatchScale(live[liveIndex].Min, live[liveIndex].Max,
-                        tier.Ranges[index], out candidateScales[index]))
+                if (index == tier.Ranges.Count) return true;
+                for (var position = 0; position < activeIndices.Length; position++)
                 {
-                    matched = false;
-                    break;
+                    if (used[position]) continue;
+                    var liveIndex = activeIndices[position];
+                    if (!TryMatchScale(live[liveIndex].Min, live[liveIndex].Max,
+                            tier.Ranges[index], out var scale)) continue;
+                    used[position] = true;
+                    candidateIndices[index] = liveIndex;
+                    candidateScales[index] = scale;
+                    if (MatchRanges(index + 1)) return true;
+                    used[position] = false;
                 }
+                return false;
             }
-
-            if (!matched)
+            if (!MatchRanges(0))
                 continue;
             scales = candidateScales;
-            liveStatIndices = activeIndices;
+            liveStatIndices = candidateIndices;
             return tierIndex;
         }
 

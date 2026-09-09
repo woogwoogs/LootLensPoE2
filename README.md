@@ -1,24 +1,31 @@
 # LootLens2
 
-item analyzer/visualizer for poe2
+A compact item mod analyzer for **ExileCore2 / Path of Exile 2**.
 
+## Features
 
-## Roll slider modes
+- Shows modifier values, tiers, and prefix/suffix indicators.
+- View rolls as **sliders** or **numerical ranges**.
+- Switch between **Current Tier** and **All Tiers** ranges.
+- Weapon DPS breakdown and unique-item perfection.
+- Adjustable text size, colours, and panel placement.
+- **Hold** a hotkey to view the analyzer, or use **Always** mode.
 
-### Current Tier
+## New: Tier markers
 
-![Current-tier roll sliders](docs/current-tier.png)
+Small diamonds let you spot high-tier mods directly on items without hovering.
 
-The diamond shows where the roll landed **inside its current modifier tier**. This is useful when you want to know whether that specific tier rolled low or high.
+- **T1 = purple · T2 = blue · T3 = green** by default.
+- One diamond per qualifying affix: three T1 affixes show three purple diamonds.
+- Adjustable colours and size (default: **12**).
+- Enabled for inventory, stash, vendors, Ritual, and other supported item windows. Equipped gear is optional.
 
-### All Possible Tiers
+## Roll ranges
 
-![All-possible-tier roll sliders](docs/all-possible-tiers.png)
+**Current Tier** shows how the roll compares within its own tier. **All Tiers** compares it against the full range across valid tiers for that item base.
 
-The diamond compares the same roll against the **full range of tiers available to that item base**. This gives a better picture of how strong the modifier is overall.
+![Roll range options: sliders and numbers, current tier and all tiers](docs/roll-range-options.png)
 
-For example, `T9/10` means the item rolled Tier 9 and there are 10 valid tiers for that modifier on the base.
+## Install
 
-
-The built in leveling filter is still being worked on but works for a few mods now. 
-
+Place the `LootLens2` folder in `ExileCore2/Plugins/Source`, replacing the previous folder if updating. Enable the plugin and adjust its settings. The default analyzer hotkey is **F8**.

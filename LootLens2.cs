@@ -15,25 +15,33 @@ namespace LootLens2;
 
 public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
 {
-    private const float OverlayTextBaseline = 1.30f;
+    private const float OverlayTextBaseline = 1.625f;
 
     private ItemAnalyzer _analyzer = null!;
     private ItemDatabase _database = ItemDatabase.Empty;
-    private readonly List<CheckMarker> _checkMarkers = [];
-    private long _nextCheckRefreshTicks;
     private int _settingsSignature;
     private long _cachedHoverAddress;
     private long _nextHoverAnalysisTicks;
     private AnalyzedItem? _cachedHoverAnalysis;
-    private bool _analyzerToggled;
 
     public override bool Initialise()
     {
-        Settings.Profiles ??= QualificationProfile.CreateDefaults();
-        if (Settings.Profiles.Count == 0)
-            Settings.Profiles = QualificationProfile.CreateDefaults();
-
-        EnsureMissingProfiles();
+        // Keep old enum values readable so saved settings can migrate safely.
+        if (Settings.AnalyzerVisibility != AnalyzerVisibilityMode.Always)
+            Settings.AnalyzerVisibility = AnalyzerVisibilityMode.Hold;
+        if (Settings.PerfectionRange == PerfectionRangeMode.ItemLevelReachable)
+            Settings.PerfectionRange = PerfectionRangeMode.AllValidTiers;
+        if (Settings.SettingsVersion < 9)
+        {
+            if (Settings.TierDiamondSize.Value == 8) Settings.TierDiamondSize.Value = 12;
+            if (Settings.Tier1DiamondColor == new Vector4(1f, .78f, .22f, 1f))
+                Settings.Tier1DiamondColor = new Vector4(.75f, .45f, 1f, 1f);
+            if (Settings.Tier2DiamondColor == new Vector4(.25f, .85f, 1f, 1f))
+                Settings.Tier2DiamondColor = new Vector4(.25f, .60f, 1f, 1f);
+            if (Settings.Tier3DiamondColor == new Vector4(.75f, .45f, 1f, 1f))
+                Settings.Tier3DiamondColor = new Vector4(.30f, .85f, .45f, 1f);
+            Settings.SettingsVersion = 9;
+        }
         _database = ItemDatabase.Load(DirectoryFullName);
         _analyzer = new ItemAnalyzer(this, _database);
         _settingsSignature = ComputeSettingsSignature();
@@ -42,18 +50,12 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
 
     public override void Tick()
     {
-        if (Settings.AnalyzerVisibility == AnalyzerVisibilityMode.Toggle &&
-            Settings.AnalyzerKey.PressedOnce())
-            _analyzerToggled = !_analyzerToggled;
-
         var signature = ComputeSettingsSignature();
         if (signature == _settingsSignature)
             return;
 
         _settingsSignature = signature;
         _analyzer.ClearCaches();
-        _checkMarkers.Clear();
-        _nextCheckRefreshTicks = 0;
         _cachedHoverAddress = 0;
         _nextHoverAnalysisTicks = 0;
         _cachedHoverAnalysis = null;
@@ -66,13 +68,14 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
 
         try
         {
-            DrawVisibleChecks();
+            DrawInventoryTierDiamonds();
 
             var hover = GameController.Game.IngameState.UIHover?.AsObject<HoverItemIcon>();
             if (hover == null || !hover.IsValid)
                 return;
 
-            DrawHoveredItemCheck(hover);
+            DrawHoveredTierDiamonds(hover);
+
 
             if (!Settings.ShowAnalyzer.Value)
                 return;
@@ -105,46 +108,8 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
     private bool ShouldShowAnalyzer() => Settings.AnalyzerVisibility switch
     {
         AnalyzerVisibilityMode.Always => true,
-        AnalyzerVisibilityMode.Toggle => _analyzerToggled,
         _ => Settings.AnalyzerKey.IsPressed()
     };
-
-    internal CampaignStage GetActiveCampaignStage()
-    {
-        if (Settings.CampaignStage != CampaignStageSelection.Automatic)
-            return CampaignIfl.FromSelection(Settings.CampaignStage);
-
-        var level = GetPlayerLevel();
-        return CampaignIfl.FromLevel(level > 0 ? level : 1);
-    }
-
-    internal int GetPlayerLevel()
-    {
-        try
-        {
-            var playerEntity = GameController.Player;
-            var playerComponent = playerEntity?.GetComponent<Player>();
-            var serverData = GameController.IngameState?.ServerData;
-
-            foreach (var source in new object?[]
-                     {
-                         playerComponent,
-                         playerEntity,
-                         serverData
-                     })
-            {
-                var level = ReadPositiveInt(source,
-                    "Level", "PlayerLevel", "CharacterLevel");
-                if (level > 0)
-                    return level;
-            }
-        }
-        catch
-        {
-        }
-
-        return 0;
-    }
 
     private AnalyzedItem? GetHoverAnalysis(Entity item, Element tooltip)
     {
@@ -158,220 +123,6 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
         _cachedHoverAnalysis = _analyzer.Analyze(item, tooltip);
         _nextHoverAnalysisTicks = now + TimeSpan.TicksPerMillisecond * 100;
         return _cachedHoverAnalysis;
-    }
-
-    private void DrawVisibleChecks()
-    {
-        if (!Settings.ShowQualifyingCheck.Value)
-        {
-            _checkMarkers.Clear();
-            return;
-        }
-
-        var now = DateTime.UtcNow.Ticks;
-        if (now >= _nextCheckRefreshTicks)
-        {
-            _checkMarkers.Clear();
-            RefreshInventoryChecks();
-            RefreshStashChecks();
-            _nextCheckRefreshTicks = now + TimeSpan.TicksPerMillisecond * 250;
-        }
-
-        foreach (var marker in _checkMarkers)
-            DrawGreenCheck(marker.TopLeft, marker.Size);
-    }
-
-    private void RefreshInventoryChecks()
-    {
-        try
-        {
-            var inventoryPanel = GameController.IngameState.IngameUi.InventoryPanel;
-            if (inventoryPanel == null || !inventoryPanel.IsVisible)
-                return;
-
-            var items = GameController.IngameState.ServerData.PlayerInventories[0]
-                .Inventory.InventorySlotItems;
-            if (items == null)
-                return;
-
-            foreach (var slotItem in items)
-            {
-                var item = slotItem?.Item;
-                if (item == null || !item.IsValid || !_analyzer.Qualifies(item))
-                    continue;
-
-                var rect = slotItem.GetClientRect();
-                if (rect.Width <= 0 || rect.Height <= 0)
-                    continue;
-
-                var size = Math.Min(Settings.MarkerSize.Value,
-                    Math.Max(10f, Math.Min(rect.Width, rect.Height) * .34f));
-                _checkMarkers.Add(new CheckMarker(
-                    new Vector2(rect.Left + 3f, rect.Top + 3f), size));
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    private void RefreshStashChecks()
-    {
-        try
-        {
-            var stash = GameController.IngameState.IngameUi.StashElement;
-            var stashInventory = stash?.VisibleStash;
-            if (stash == null || !stash.IsVisible || stashInventory == null)
-                return;
-
-            var inventoryRect = stashInventory.InventoryUIElement?.GetClientRect() ?? default;
-            var columns = stashInventory.TotalBoxesInInventoryRow;
-            var items = stashInventory.ServerInventory?.InventorySlotItems;
-            if (inventoryRect.Width <= 0 || inventoryRect.Height <= 0 ||
-                columns <= 0 || items == null)
-                return;
-
-            var cellSize = inventoryRect.Width / columns;
-            if (cellSize <= 0)
-                return;
-
-            foreach (var slotItem in items)
-            {
-                var item = slotItem?.Item;
-                if (item == null || !item.IsValid || !_analyzer.Qualifies(item))
-                    continue;
-
-                var left = inventoryRect.Left + slotItem.PosX * cellSize;
-                var top = inventoryRect.Top + slotItem.PosY * cellSize;
-                var size = Math.Min(Settings.MarkerSize.Value,
-                    Math.Max(10f, cellSize * .34f));
-                _checkMarkers.Add(new CheckMarker(new Vector2(left + 3f, top + 3f), size));
-            }
-        }
-        catch
-        {
-        }
-    }
-
-    private void DrawHoveredItemCheck(HoverItemIcon hover)
-    {
-        if (!Settings.ShowQualifyingCheck.Value || !_analyzer.Qualifies(hover.Item))
-            return;
-
-        try
-        {
-            var icon = hover.Item2DIcon;
-            if (icon == null || !icon.IsValid)
-                return;
-
-            var rect = icon.GetClientRect();
-            if (rect.Width <= 0 || rect.Height <= 0)
-                return;
-
-            var size = Math.Min(Settings.MarkerSize.Value,
-                Math.Max(10f, Math.Min(rect.Width, rect.Height) * .34f));
-            DrawGreenCheck(new Vector2(rect.Left + 3f, rect.Top + 3f), size);
-        }
-        catch
-        {
-        }
-    }
-
-    private static void DrawGreenCheck(Vector2 topLeft, float size)
-    {
-        var draw = ImGui.GetForegroundDrawList();
-        var bottomRight = topLeft + new Vector2(size, size);
-        draw.AddRectFilled(topLeft, bottomRight, Pack(8, 13, 10, 225), 3f);
-        draw.AddRect(topLeft, bottomRight, Pack(73, 220, 118, 245), 3f,
-            ImDrawFlags.None, 1.4f);
-
-        var a = topLeft + new Vector2(size * .23f, size * .54f);
-        var b = topLeft + new Vector2(size * .43f, size * .73f);
-        var c = topLeft + new Vector2(size * .80f, size * .29f);
-        draw.AddLine(a, b, Pack(83, 232, 129, 255), Math.Max(2f, size * .16f));
-        draw.AddLine(b, c, Pack(83, 232, 129, 255), Math.Max(2f, size * .16f));
-    }
-
-    private void DrawDetailedAnalyzerPanel(ExileCore2.Shared.RectangleF tooltipRect,
-        AnalyzedItem analysis)
-    {
-        var scale = Settings.PanelScale.Value / 100f;
-        var draw = ImGui.GetForegroundDrawList();
-        var font = ImGui.GetFont();
-        var baseFont = ImGui.GetFontSize() * OverlayTextBaseline;
-        var display = ImGui.GetIO().DisplaySize;
-
-        var width = Math.Max(tooltipRect.Width,
-            Math.Min(Settings.PanelWidth.Value * scale, display.X - 16f));
-        var topPadding = 6f * scale;
-        var contextStripHeight = 34f * scale;
-        var modRowHeight = 25f * scale;
-        var uniqueFooter = Settings.ShowOverallPerfection.Value &&
-                           analysis.OverallPerfection >= 0 ? 44f * scale : 0f;
-
-        var qualificationCount = analysis.QualificationMatches.Count;
-        var qualifierColumns = Math.Min(4, Math.Max(1, qualificationCount));
-        var qualifierRows = qualificationCount == 0
-            ? 0
-            : (int)Math.Ceiling(qualificationCount /
-                                (double)qualifierColumns);
-        var qualificationFooter = Settings.ShowQualificationFooter.Value &&
-                                  analysis.RequiredQualificationMatches > 0
-            ? (22f + qualifierRows * 18f) * scale
-            : 0f;
-
-        var height = topPadding + contextStripHeight +
-                     analysis.Mods.Count * modRowHeight + uniqueFooter +
-                     qualificationFooter + 5f * scale;
-
-        var gap = Settings.PanelGap.Value * scale;
-        var x = Math.Clamp(tooltipRect.Left, 8f, Math.Max(8f, display.X - width - 8f));
-        var belowY = tooltipRect.Bottom + gap;
-        var y = belowY + height <= display.Y - 8f
-            ? belowY
-            : Math.Max(8f, tooltipRect.Top - gap - height);
-
-        var topLeft = new Vector2(x, y);
-        var bottomRight = new Vector2(x + width, y + height);
-        DrawCardBackground(draw, topLeft, bottomRight, scale);
-        draw.PushClipRect(topLeft + Vector2.One, bottomRight - Vector2.One, true);
-
-        var normal = Pack(235, 236, 239, 255);
-        var subdued = Pack(145, 149, 158, 255);
-        var mutedLine = Pack(105, 107, 112, 165);
-        var cy = y + topPadding;
-        DrawItemSummaryStrip(draw, font, baseFont, x, cy, width, scale,
-            analysis, subdued);
-        cy += contextStripHeight;
-
-        var displayMods = analysis.Mods
-            .Select((mod, index) => (Mod: mod, Index: index))
-            .OrderBy(entry => GetModifierDisplayOrder(entry.Mod))
-            .ThenBy(entry => entry.Index)
-            .Select(entry => entry.Mod)
-            .ToList();
-
-        for (var index = 0; index < displayMods.Count; index++)
-        {
-            var mod = displayMods[index];
-            var rowTop = cy + index * modRowHeight;
-            DrawModifierRow(draw, font, baseFont, x, rowTop, width,
-                modRowHeight, scale, mod, subdued);
-        }
-        cy += displayMods.Count * modRowHeight;
-
-        if (uniqueFooter > 0f)
-        {
-            DrawPerfectionFooter(draw, font, baseFont, x, cy, width,
-                scale, analysis, subdued);
-            cy += uniqueFooter;
-        }
-
-        if (qualificationFooter > 0f)
-            DrawQualificationFooter(draw, font, baseFont, x, cy, width,
-                scale, analysis, normal, subdued, mutedLine);
-
-        draw.PopClipRect();
     }
 
     private void DrawModifierRow(ImDrawListPtr draw, ImFontPtr font,
@@ -532,93 +283,6 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
             new Vector2(barLeft, y + 33f * scale), subdued, detail);
     }
 
-    private static void DrawQualificationFooter(ImDrawListPtr draw,
-        ImFontPtr font, float baseFont, float x, float y, float width,
-        float scale, AnalyzedItem analysis, uint normal, uint subdued,
-        uint mutedLine)
-    {
-        draw.AddLine(new Vector2(x + 14f * scale, y + 2f * scale),
-            new Vector2(x + width - 14f * scale, y + 2f * scale),
-            mutedLine, Math.Max(1f, scale));
-
-        var count = $"{analysis.QualificationMatches.Count}/" +
-                    $"{analysis.RequiredQualificationMatches} MATCHES";
-        if (!analysis.MandatoryQualificationPassed &&
-            !string.IsNullOrWhiteSpace(analysis.MandatoryQualificationLabel))
-            count += $"  ·  NEED {analysis.MandatoryQualificationLabel}";
-        var countColor = analysis.Qualifies ? Pack(83, 232, 129, 255) : normal;
-        var compactRuleSet = CompactQualificationRuleSet(
-            analysis.QualificationRuleSet);
-        var ruleSetWidth = TextWidth(compactRuleSet, .47f * scale);
-        var countWidth = Math.Max(80f * scale,
-            width - ruleSetWidth - 42f * scale);
-        draw.AddText(font, baseFont * .55f * scale,
-            new Vector2(x + 14f * scale, y + 9f * scale), countColor,
-            Ellipsize(count, countWidth, .55f * scale));
-        if (!string.IsNullOrWhiteSpace(compactRuleSet))
-        {
-            draw.AddText(font, baseFont * .47f * scale,
-                new Vector2(x + width - 14f * scale - ruleSetWidth,
-                    y + 11f * scale), subdued, compactRuleSet);
-        }
-
-        var entries = analysis.QualificationMatches;
-        if (entries.Count == 0)
-            return;
-
-        var columns = Math.Min(4, entries.Count);
-        var columnWidth = (width - 26f * scale) / columns;
-        for (var index = 0; index < entries.Count; index++)
-        {
-            var match = entries[index];
-            var row = index / columns;
-            var column = index % columns;
-            var left = x + 13f * scale + column * columnWidth;
-            var top = y + (21f + row * 18f) * scale;
-            var color = Pack(83, 225, 125, 255);
-            draw.AddCircleFilled(new Vector2(left + 3f * scale,
-                top + 5f * scale), 2.4f * scale, color);
-
-            var label = CompactQualificationLabel(match.Label);
-            var value = $"{match.Actual}{match.Suffix}/{match.Required}{match.Suffix}";
-            var valueScale = .52f * scale;
-            var valueWidth = TextWidth(value, valueScale);
-            var valueRight = left + columnWidth - 9f * scale;
-            var labelLeft = left + 12f * scale;
-            var labelWidth = Math.Max(20f * scale,
-                valueRight - valueWidth - labelLeft - 7f * scale);
-
-            draw.AddText(font, baseFont * .48f * scale,
-                new Vector2(labelLeft, top), subdued,
-                Ellipsize(label, labelWidth, .48f * scale));
-            draw.AddText(font, baseFont * valueScale,
-                new Vector2(valueRight - valueWidth, top),
-                normal, value);
-        }
-    }
-
-    private static string CompactQualificationRuleSet(string ruleSet)
-    {
-        if (string.IsNullOrWhiteSpace(ruleSet))
-            return string.Empty;
-
-        var normalized = ruleSet.Trim().ToUpperInvariant();
-        return normalized switch
-        {
-            "ACT 1 IFL" => "A1",
-            "ACT 2 IFL" => "A2",
-            "ACT 3 IFL" => "A3",
-            "ACT 4 IFL" => "A4",
-            "INTERLUDE I IFL" => "I1",
-            "INTERLUDE II IFL" => "I2",
-            "INTERLUDE III IFL" => "I3",
-            "EARLY MAPS IFL" => "MAPS",
-            "CUSTOM IFL" => "CUSTOM",
-            _ => normalized.Replace(" IFL", string.Empty,
-                StringComparison.OrdinalIgnoreCase)
-        };
-    }
-
     private static int GetModifierDisplayOrder(AnalyzedMod mod)
     {
         if (mod.IsImplicit) return 0;
@@ -638,30 +302,6 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
             .Replace("MIN ", string.Empty, StringComparison.OrdinalIgnoreCase)
             .Replace("MAX ", string.Empty, StringComparison.OrdinalIgnoreCase);
     }
-
-    private static string CompactQualificationLabel(string label) => label switch
-    {
-        "TOTAL ELE RES" => "ELE RES",
-        "LIGHTNING RES" => "LTNG RES",
-        "ALL ELE RES" => "ALL RES",
-        "BEST DEFENCE" => "DEFENCE",
-        "FLAT ARMOUR" => "FLAT ARM",
-        "INC ARMOUR" => "INC ARM",
-        "ARMOUR TO ELE" => "ARM TO ELE",
-        "ES MOD" => "ES",
-        "EV + ES" => "EV + ES",
-        "ATTACK SPEED" => "ATK SPEED",
-        "CAST SPEED" => "CAST SPEED",
-        "SPELL DAMAGE" => "SPELL DMG",
-        "PHYS DAMAGE" => "PHYS DMG",
-        "PHYSICAL DPS" => "PDPS",
-        "TOTAL DPS" => "DPS",
-        "SKILL LEVELS" => "SKILL LVL",
-        "MELEE LEVELS" => "MELEE LVL",
-        "CRIT CHANCE" => "CRIT",
-        "ADDED DAMAGE" => "ADDED DMG",
-        _ => label
-    };
 
     private static void DrawCardBackground(ImDrawListPtr draw, Vector2 topLeft,
         Vector2 bottomRight, float scale)
@@ -836,8 +476,10 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
             return Pack(123, 153, 235, 255);
         if (value.Contains("movement speed"))
             return Pack(78, 226, 112, 255);
-        if (value.Contains("attack speed") || value.Contains("accuracy"))
-            return Pack(211, 148, 85, 255);
+        if (value.Contains("attack speed"))
+            return Pack(228, 139, 65, 255);
+        if (value.Contains("accuracy"))
+            return Pack(205, 162, 108, 255);
         if (value.Contains("cast speed"))
             return Pack(124, 139, 238, 255);
         if (value.Contains("critical"))
@@ -875,7 +517,7 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
         // Ailment-specific wording inherits its damage type. Generic ailment
         // and damage-over-time mechanics keep their own related shades.
         if (value.Contains("ignite") || value.Contains("burning"))
-            return Pack(242, 91, 38, 255);
+            return Pack(255, 82, 28, 255);
         if (value.Contains("freeze") || value.Contains("chill"))
             return Pack(72, 176, 235, 255);
         if (value.Contains("shock"))
@@ -900,7 +542,7 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
         if (value.Contains("spirit"))
             return Pack(66, 204, 190, 255);
         if (value.Contains("fire"))
-            return Pack(242, 91, 38, 255);
+            return Pack(255, 82, 28, 255);
         if (value.Contains("cold"))
             return Pack(72, 176, 235, 255);
         if (value.Contains("lightning"))
@@ -923,7 +565,7 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
 
         // Attribute and broad offensive families.
         if (value.Contains("strength"))
-            return Pack(216, 99, 83, 255);
+            return Pack(230, 91, 104, 255);
         if (value.Contains("dexterity"))
             return Pack(76, 185, 109, 255);
         if (value.Contains("intelligence"))
@@ -931,11 +573,11 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
         if (value.Contains("attribute"))
             return Pack(201, 176, 103, 255);
         if (value.Contains("physical"))
-            return Pack(208, 157, 98, 255);
+            return Pack(205, 171, 125, 255);
         if (value.Contains("spell") || value.Contains("cast"))
             return Pack(124, 139, 238, 255);
         if (value.Contains("attack"))
-            return Pack(208, 157, 98, 255);
+            return Pack(205, 171, 125, 255);
 
         // Neutral utility and unfamiliar modifiers should stay understated.
         return Pack(176, 180, 188, 255);
@@ -1019,65 +661,10 @@ public partial class LootLens2 : BaseSettingsPlugin<LootLens2Settings>
         return 0;
     }
 
-    private int ComputeSettingsSignature()
-    {
-        var hash = new HashCode();
-        hash.Add(Settings.ShowQualifyingCheck.Value);
-        hash.Add(Settings.CheckMagicItems.Value);
-        hash.Add(Settings.CheckRareItems.Value);
-        hash.Add(Settings.CheckUniqueItems.Value);
-        hash.Add(Settings.MarkerSize.Value);
-        hash.Add(Settings.PerfectionRange);
-        hash.Add(Settings.QualificationRules);
-        hash.Add(Settings.CampaignStage);
-        if (Settings.QualificationRules == QualificationRulesMode.Campaign)
-            hash.Add(GetActiveCampaignStage());
-        hash.Add(Settings.CampaignBuildPreset);
-
-        foreach (var profile in Settings.Profiles ?? [])
-        {
-            hash.Add(profile.Name);
-            hash.Add(profile.Enabled);
-            hash.Add(profile.RequiredMatches);
-            hash.Add(profile.MandatoryRule);
-            hash.Add(profile.MinimumLife);
-            hash.Add(profile.MinimumSpirit);
-            hash.Add(profile.MinimumTotalElementalResistance);
-            hash.Add(profile.MinimumElementalResistancePerMod);
-            hash.Add(profile.MinimumAllElementalResistance);
-            hash.Add(profile.MinimumChaosResistance);
-            hash.Add(profile.MinimumMovementSpeed);
-            hash.Add(profile.MinimumDefencePercent);
-            hash.Add(profile.MinimumFlatArmour);
-            hash.Add(profile.MinimumArmourPercent);
-            hash.Add(profile.MinimumArmourAppliesToElementalDamage);
-            hash.Add(profile.MinimumEnergyShieldMods);
-            hash.Add(profile.MinimumEvasionEnergyShieldMods);
-            hash.Add(profile.MinimumAttributes);
-            hash.Add(profile.MinimumAttackSpeed);
-            hash.Add(profile.MinimumCastSpeed);
-            hash.Add(profile.MinimumSpellDamage);
-            hash.Add(profile.MinimumPhysicalDamagePercent);
-            hash.Add(profile.MinimumPhysicalDps);
-            hash.Add(profile.MinimumTotalDps);
-            hash.Add(profile.MinimumSkillLevels);
-            hash.Add(profile.MinimumMeleeSkillLevels);
-            hash.Add(profile.MinimumCriticalChance);
-            hash.Add(profile.MinimumAddedDamageMods);
-            hash.Add(profile.UseCombinedCasterPower);
-        }
-        return hash.ToHashCode();
-    }
-
-    private void EnsureMissingProfiles()
-    {
-        foreach (var profile in QualificationProfile.CreateDefaults())
-        {
-            if (!Settings.Profiles.Any(x =>
-                    string.Equals(x.Name, profile.Name, StringComparison.OrdinalIgnoreCase)))
-                Settings.Profiles.Add(profile);
-        }
-    }
+    private int ComputeSettingsSignature() => HashCode.Combine(
+        Settings.PerfectionRange, Settings.AnalyzeMagicItems.Value,
+        Settings.AnalyzeRareItems.Value, Settings.AnalyzeUniqueItems.Value,
+        Settings.ShowImplicitModifiers.Value);
 
     private static uint Pack(byte red, byte green, byte blue, byte alpha) =>
         (uint)(red | green << 8 | blue << 16 | alpha << 24);

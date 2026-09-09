@@ -54,40 +54,37 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
             result.UniqueDropTier = database.GetUniqueDropTier(result.Name);
 
         AnalyzeModifiers(item, mods, result);
-        AnalyzeQualification(item, mods, result);
         return result;
     }
 
-    public bool Qualifies(Entity? item)
-    {
-        if (item == null || !item.IsValid || !Settings.ShowQualifyingCheck.Value)
-            return false;
-
-        var mods = item.GetComponent<Mods>();
-        if (mods == null)
-            return false;
-
-        if ((mods.ItemRarity == ItemRarity.Magic && !Settings.CheckMagicItems.Value) ||
-            (mods.ItemRarity == ItemRarity.Rare && !Settings.CheckRareItems.Value) ||
-            (mods.ItemRarity == ItemRarity.Unique && !Settings.CheckUniqueItems.Value) ||
-            (mods.ItemRarity != ItemRarity.Magic && mods.ItemRarity != ItemRarity.Rare && mods.ItemRarity != ItemRarity.Unique))
-            return false;
-
-        var profile = FindProfile(item.Path);
-        if (profile == null || !profile.Enabled)
-            return false;
-
-        if (Settings.QualificationRules == QualificationRulesMode.Campaign &&
-            mods.ItemRarity == ItemRarity.Unique)
-            return false;
-
-        var stats = BuildStatSnapshot(item, mods);
-        return MandatoryRulePassed(profile, stats) &&
-               GetQualificationMatches(profile, stats).Count >=
-               Math.Max(1, profile.RequiredMatches);
-    }
-
     public void ClearCaches() => _tierCache.Clear();
+
+    // Count affix records, not their rendered stat lines (hybrids count once).
+    public List<int> GetInventoryTiers(Entity item)
+    {
+        var tiers = new List<int>();
+        var mods = item.GetComponent<Mods>();
+        if (mods == null || mods.ItemMods == null ||
+            (mods.ItemRarity != ItemRarity.Magic && mods.ItemRarity != ItemRarity.Rare))
+            return tiers;
+        var baseType = GetBaseTypeName(item);
+        foreach (var mod in mods.ItemMods)
+        {
+            var record = mod?.ModRecord;
+            if (mod == null || record == null ||
+                (record.AffixType != ModType.Prefix && record.AffixType != ModType.Suffix) ||
+                IsHiddenInternalMod(mod) || IsCrafted(record, mod) ||
+                (mods.ImplicitMods != null && mods.ImplicitMods.Any(x =>
+                    x != null && string.Equals(x.RawName, mod.RawName, StringComparison.Ordinal))))
+                continue;
+            var match = database.Match(mod, baseType, mods.ItemLevel, PerfectionRangeMode.CurrentTier);
+            var tier = match?.Tier ?? GetModTier(item, mod).Tier;
+            if (tier >= 1 && tier <= 3)
+                tiers.Add(tier);
+        }
+        tiers.Sort();
+        return tiers;
+    }
 
     private void AnalyzeModifiers(Entity item, Mods mods, AnalyzedItem result)
     {
@@ -149,12 +146,13 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
                 }
             }
 
-            (int Percentage, int VariableRolls, string RangeText) perfection = isHidden
-                ? (-1, 0, string.Empty)
+            (int Percentage, int VariableRolls, string RangeText, bool Fixed) perfection = isHidden
+                ? (-1, 0, string.Empty, false)
                 : GetRollPerfection(itemMod, databaseMatch);
             mod.Perfection = perfection.Percentage;
             mod.VariableRollCount = perfection.VariableRolls;
             mod.RangeText = perfection.RangeText;
+            mod.IsFixed = perfection.Fixed;
             mod.RangeLabel = databaseMatch == null
                 ? "L RANGE"
                 : Settings.PerfectionRange switch
@@ -178,272 +176,6 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
             result.OverallPerfection = Math.Clamp((int)Math.Round(
                 weightedPerfection / result.VariableRollCount,
                 MidpointRounding.AwayFromZero), 0, 100);
-        }
-    }
-
-    private void AnalyzeQualification(Entity item, Mods mods, AnalyzedItem result)
-    {
-        if (Settings.QualificationRules == QualificationRulesMode.Campaign &&
-            mods.ItemRarity == ItemRarity.Unique)
-            return;
-
-        var profile = FindProfile(item.Path);
-        if (profile == null || !profile.Enabled)
-            return;
-
-        result.RequiredQualificationMatches = Math.Max(1, profile.RequiredMatches);
-        result.QualificationRuleSet = Settings.QualificationRules ==
-                                      QualificationRulesMode.Campaign
-            ? CampaignIfl.Label(plugin.GetActiveCampaignStage())
-            : "CUSTOM IFL";
-        result.MandatoryQualificationLabel = CampaignIfl.MandatoryLabel(
-            profile.MandatoryRule);
-        var stats = BuildStatSnapshot(item, mods);
-        stats.WeaponDps = result.WeaponDps;
-        result.MandatoryQualificationPassed = MandatoryRulePassed(profile, stats);
-        result.QualificationMatches.AddRange(GetQualificationMatches(
-            profile, stats, result.QualificationFailures));
-        result.Qualifies = result.MandatoryQualificationPassed &&
-                           result.QualificationMatches.Count >=
-                           result.RequiredQualificationMatches;
-    }
-
-    private QualificationProfile? FindProfile(string? path)
-    {
-        var slot = GetSlotName(path);
-        if (Settings.QualificationRules == QualificationRulesMode.Campaign)
-            return CampaignIfl.GetProfile(plugin.GetActiveCampaignStage(),
-                Settings.CampaignBuildPreset, slot);
-
-        var customSlot = string.Equals(slot, "1H Mace",
-            StringComparison.OrdinalIgnoreCase)
-            ? "Martial Weapon"
-            : slot;
-        return Settings.Profiles?.FirstOrDefault(x =>
-            string.Equals(x.Name, customSlot, StringComparison.OrdinalIgnoreCase));
-    }
-
-    private static bool MandatoryRulePassed(QualificationProfile profile,
-        StatSnapshot stats) => profile.MandatoryRule switch
-    {
-        MandatoryQualificationRule.LifeOrDefence =>
-            (profile.MinimumLife > 0 && stats.Life >= profile.MinimumLife) ||
-            (profile.MinimumDefencePercent > 0 &&
-             stats.BestDefencePercent >= profile.MinimumDefencePercent),
-        MandatoryQualificationRule.MovementSpeed =>
-            profile.MinimumMovementSpeed <= 0 ||
-            stats.MovementSpeed >= profile.MinimumMovementSpeed,
-        MandatoryQualificationRule.TotalWeaponDps =>
-            profile.MinimumTotalDps <= 0 ||
-            stats.WeaponDps.Total >= profile.MinimumTotalDps,
-        MandatoryQualificationRule.CasterPower =>
-            (profile.MinimumSpellDamage > 0 &&
-             stats.SpellDamage >= profile.MinimumSpellDamage) ||
-            (profile.MinimumSkillLevels > 0 &&
-             stats.SkillLevels >= profile.MinimumSkillLevels),
-        MandatoryQualificationRule.EvasionAndEnergyShield =>
-            profile.MinimumEvasionEnergyShieldMods <= 0 ||
-            stats.EvasionEnergyShieldMods >=
-            profile.MinimumEvasionEnergyShieldMods,
-        _ => true
-    };
-
-    private static List<QualificationMatch> GetQualificationMatches(
-        QualificationProfile profile, StatSnapshot stats,
-        List<QualificationMatch>? failures = null)
-    {
-        var matches = new List<QualificationMatch>();
-
-        Add("LIFE", stats.Life, profile.MinimumLife, string.Empty);
-        Add("SPIRIT", stats.Spirit, profile.MinimumSpirit, string.Empty);
-        Add("TOTAL ELE RES", stats.TotalElementalResistance,
-            profile.MinimumTotalElementalResistance, "%");
-        Add("FIRE RES", stats.FireResistance,
-            profile.MinimumElementalResistancePerMod, "%");
-        Add("COLD RES", stats.ColdResistance,
-            profile.MinimumElementalResistancePerMod, "%");
-        Add("LIGHTNING RES", stats.LightningResistance,
-            profile.MinimumElementalResistancePerMod, "%");
-        Add("ALL ELE RES", stats.AllElementalResistance,
-            profile.MinimumAllElementalResistance, "%");
-        Add("CHAOS RES", stats.ChaosResistance, profile.MinimumChaosResistance, "%");
-        Add("MOVE SPEED", stats.MovementSpeed, profile.MinimumMovementSpeed, "%");
-        Add("BEST DEFENCE", stats.BestDefencePercent, profile.MinimumDefencePercent, "%");
-        Add("FLAT ARMOUR", stats.FlatArmour, profile.MinimumFlatArmour,
-            string.Empty);
-        Add("INC ARMOUR", stats.ArmourPercent, profile.MinimumArmourPercent, "%");
-        Add("ARMOUR TO ELE", stats.ArmourAppliesToElementalDamage,
-            profile.MinimumArmourAppliesToElementalDamage, "%");
-        Add("ES MOD", stats.EnergyShieldMods, profile.MinimumEnergyShieldMods,
-            string.Empty);
-        Add("EV + ES", stats.EvasionEnergyShieldMods,
-            profile.MinimumEvasionEnergyShieldMods, string.Empty);
-        Add("ATTRIBUTE", stats.BestAttribute, profile.MinimumAttributes, string.Empty);
-        Add("ATTACK SPEED", stats.AttackSpeed, profile.MinimumAttackSpeed, "%");
-        Add("CAST SPEED", stats.CastSpeed, profile.MinimumCastSpeed, "%");
-        if (profile.UseCombinedCasterPower)
-            AddCasterPower();
-        else
-            Add("SPELL DAMAGE", stats.SpellDamage, profile.MinimumSpellDamage, "%");
-        Add("PHYS DAMAGE", stats.PhysicalDamagePercent,
-            profile.MinimumPhysicalDamagePercent, "%");
-        Add("PHYSICAL DPS", (int)Math.Round(stats.WeaponDps.Physical),
-            profile.MinimumPhysicalDps, string.Empty);
-        Add("TOTAL DPS", (int)Math.Round(stats.WeaponDps.Total),
-            profile.MinimumTotalDps, string.Empty);
-        if (!profile.UseCombinedCasterPower)
-            Add("SKILL LEVELS", stats.SkillLevels,
-                profile.MinimumSkillLevels, string.Empty);
-        Add("MELEE LEVELS", stats.MeleeSkillLevels,
-            profile.MinimumMeleeSkillLevels, string.Empty);
-        Add("CRIT CHANCE", stats.CriticalChance,
-            profile.MinimumCriticalChance, "%");
-        Add("ADDED DAMAGE", stats.AddedDamageMods,
-            profile.MinimumAddedDamageMods, string.Empty);
-
-        return matches;
-
-        void AddCasterPower()
-        {
-            var skillPassed = profile.MinimumSkillLevels > 0 &&
-                              stats.SkillLevels >= profile.MinimumSkillLevels;
-            var spellPassed = profile.MinimumSpellDamage > 0 &&
-                              stats.SpellDamage >= profile.MinimumSpellDamage;
-
-            if (skillPassed)
-            {
-                matches.Add(new QualificationMatch("SKILL LEVELS",
-                    stats.SkillLevels, profile.MinimumSkillLevels,
-                    string.Empty));
-                return;
-            }
-
-            if (spellPassed)
-            {
-                matches.Add(new QualificationMatch("SPELL DAMAGE",
-                    stats.SpellDamage, profile.MinimumSpellDamage, "%"));
-                return;
-            }
-
-            if (profile.MinimumSpellDamage > 0)
-                failures?.Add(new QualificationMatch("SPELL DAMAGE",
-                    stats.SpellDamage, profile.MinimumSpellDamage, "%"));
-        }
-
-        void Add(string label, int actual, int required, string suffix)
-        {
-            if (required <= 0)
-                return;
-
-            var result = new QualificationMatch(label, actual, required, suffix);
-            if (actual >= required)
-                matches.Add(result);
-            else
-                failures?.Add(result);
-        }
-    }
-
-    private StatSnapshot BuildStatSnapshot(Entity item, Mods mods)
-    {
-        var result = new StatSnapshot { WeaponDps = CalculateWeaponDps(item) };
-        AccumulateStats(mods.ItemMods);
-
-        return result;
-
-        void AccumulateStats(IEnumerable<ItemMod>? itemMods)
-        {
-            if (itemMods == null)
-                return;
-
-            foreach (var itemMod in itemMods)
-            {
-                var record = itemMod?.ModRecord;
-                if (record?.StatNames == null || itemMod?.Values == null)
-                    continue;
-
-                var stats = record.StatNames.ToArray();
-                var values = itemMod.Values.ToArray();
-                var count = Math.Min(stats.Length, values.Length);
-                var hasAddedDamage = false;
-                var hasEvasion = false;
-                var hasEnergyShield = false;
-                for (var i = 0; i < count; i++)
-                {
-                    var stat = stats[i];
-                    if (stat == null || values[i] <= -1000)
-                        continue;
-
-                    var key = (GetMemberString(stat, "Key", "Name") + " " + stat)
-                        .ToLowerInvariant();
-                    var value = values[i];
-
-                    if (ContainsAll(key, "maximum", "life") && !key.Contains("increased")) result.Life += value;
-                    else if (key.Contains("spirit")) result.Spirit += value;
-                    else if (ContainsAll(key, "fire", "resist")) result.FireResistance += value;
-                    else if (ContainsAll(key, "cold", "resist")) result.ColdResistance += value;
-                    else if (ContainsAll(key, "lightning", "resist")) result.LightningResistance += value;
-                    else if (ContainsAll(key, "chaos", "resist")) result.ChaosResistance += value;
-                    else if (ContainsAll(key, "all", "resist"))
-                        result.AllElementalResistance += value;
-
-                    if (ContainsAll(key, "movement", "speed") ||
-                        key.Contains("movement_velocity", StringComparison.Ordinal))
-                        result.MovementSpeed += value;
-                    if (key.Contains("local_base_physical_damage_reduction_rating",
-                            StringComparison.Ordinal))
-                        result.FlatArmour += value;
-                    if (ContainsAll(key, "armour", "increased") || key.Contains("physical_damage_reduction_rating_+%")) result.ArmourPercent += value;
-                    if (ContainsAll(key, "evasion", "increased") || key.Contains("evasion_rating_+%")) result.EvasionPercent += value;
-                    if (ContainsAll(key, "energy", "shield", "increased") || key.Contains("energy_shield_+%")) result.EnergyShieldPercent += value;
-                    if (key.Contains("evasion", StringComparison.Ordinal) &&
-                        (key.Contains("local", StringComparison.Ordinal) ||
-                         key.Contains("evasion_rating", StringComparison.Ordinal)))
-                        hasEvasion = true;
-                    if (ContainsAll(key, "energy", "shield") &&
-                        (key.Contains("local", StringComparison.Ordinal) ||
-                         key.Contains("energy_shield", StringComparison.Ordinal)))
-                        hasEnergyShield = true;
-                    if (ContainsAll(key, "runic", "ward", "increased") &&
-                        !key.Contains("regeneration") && !key.Contains("recharge"))
-                        result.RunicWardPercent += value;
-                    if (key.Contains("strength")) result.Strength += value;
-                    if (key.Contains("dexterity")) result.Dexterity += value;
-                    if (key.Contains("intelligence")) result.Intelligence += value;
-                    if (ContainsAll(key, "attack", "speed")) result.AttackSpeed += value;
-                    if (ContainsAll(key, "cast", "speed")) result.CastSpeed += value;
-                    if (ContainsAll(key, "spell", "damage")) result.SpellDamage += value;
-                    if (key.Contains("physical_damage_+%") || ContainsAll(key, "physical", "damage", "increased")) result.PhysicalDamagePercent += value;
-                    if ((ContainsAll(key, "skill", "level") ||
-                         ContainsAll(key, "gem", "level")) && value > 0)
-                    {
-                        result.SkillLevels += value;
-                        if (key.Contains("melee", StringComparison.Ordinal))
-                            result.MeleeSkillLevels += value;
-                    }
-                    if (ContainsAll(key, "armour", "applies", "elemental",
-                            "damage") && value > 0)
-                        result.ArmourAppliesToElementalDamage += value;
-                    if (ContainsAll(key, "critical", "chance") &&
-                        !key.Contains("minion") && value > 0)
-                    {
-                        var criticalValue = key.Contains("local") &&
-                                            !key.Contains("increased")
-                            ? Math.Max(1, (int)Math.Round(value / 100d))
-                            : value;
-                        result.CriticalChance += criticalValue;
-                    }
-                    if (ContainsAll(key, "damage", "minimum", "added") ||
-                        key.Contains("minimum_added", StringComparison.Ordinal))
-                        hasAddedDamage = true;
-                }
-
-                if (hasAddedDamage)
-                    result.AddedDamageMods++;
-                if (hasEnergyShield)
-                    result.EnergyShieldMods++;
-                if (hasEvasion && hasEnergyShield)
-                    result.EvasionEnergyShieldMods++;
-            }
         }
     }
 
@@ -475,7 +207,9 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
                 .ToList();
 
             var index = tiers.FindIndex(x => x.Hash32 == record.Hash32);
-            return Cache((index >= 0 ? index + 1 : 0, tiers.Count));
+            // recordsByTier is ordered from the earliest/weakest roll upward,
+            // while PoE displays the strongest roll as T1.
+            return Cache((index >= 0 ? tiers.Count - index : 0, tiers.Count));
         }
         catch
         {
@@ -491,12 +225,12 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
         }
     }
 
-    private static (int Percentage, int VariableRolls, string RangeText)
+    private static (int Percentage, int VariableRolls, string RangeText, bool Fixed)
         GetRollPerfection(ItemMod itemMod, ModDatabaseMatch? databaseMatch = null)
     {
         var record = itemMod.ModRecord;
         if (record?.StatNames == null || record.StatRange == null || itemMod.Values == null)
-            return (-1, 0, string.Empty);
+            return (-1, 0, string.Empty, false);
 
         try
         {
@@ -510,9 +244,11 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
                 var active = Enumerable.Range(0, count)
                     .Where(index => stats[index] != null && values[index] > -1000)
                     .ToArray();
-                if (active.Length == 0 ||
-                    databaseMatch.AggregateMinimum == databaseMatch.AggregateMaximum)
-                    return (-1, 0, string.Empty);
+                if (active.Length == 0)
+                    return (-1, 0, string.Empty, false);
+
+                if (databaseMatch.AggregateMinimum == databaseMatch.AggregateMaximum)
+                    return (-1, 0, string.Empty, true);
 
                 var value = active.Sum(index => (double)values[index]);
                 var position = Math.Clamp(
@@ -525,11 +261,12 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
                 var range = $"POWER {FormatNumber(databaseMatch.AggregateMinimum)}-" +
                             $"{FormatNumber(databaseMatch.AggregateMaximum)}{suffix}";
                 return (Math.Clamp((int)Math.Round(position * 100d,
-                    MidpointRounding.AwayFromZero), 0, 100), 1, range);
+                    MidpointRounding.AwayFromZero), 0, 100), 1, range, false);
             }
 
             var total = 0d;
             var variable = 0;
+            var known = 0;
             var displayRanges = new List<string>();
 
             for (var i = 0; i < count; i++)
@@ -543,6 +280,7 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
                               Math.Min(ranges[i].Min, ranges[i].Max);
                 var maximum = databaseMatch?.Maximum.ElementAtOrDefault(i) ??
                               Math.Max(ranges[i].Min, ranges[i].Max);
+                known++;
                 if (minimum == maximum)
                     continue;
 
@@ -560,15 +298,15 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
             }
 
             if (variable == 0)
-                return (-1, 0, string.Empty);
+                return (-1, 0, string.Empty, known > 0);
 
             return (Math.Clamp((int)Math.Round(total / variable,
                 MidpointRounding.AwayFromZero), 0, 100), variable,
-                string.Join(" / ", displayRanges));
+                string.Join(" / ", displayRanges), false);
         }
         catch
         {
-            return (-1, 0, string.Empty);
+            return (-1, 0, string.Empty, false);
         }
     }
 
@@ -932,7 +670,12 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
         var elemental = (((fireMin + fireMax) + (coldMin + coldMax) +
                            (lightningMin + lightningMax)) / 2f) * aps;
         var chaos = ((chaosMin + chaosMax) / 2f) * aps;
-        return new WeaponDps(physical + elemental + chaos, physical, elemental, chaos);
+        return new WeaponDps(physical + elemental + chaos, physical, elemental, chaos)
+        {
+            Fire = (fireMin + fireMax) / 2f * aps,
+            Cold = (coldMin + coldMax) / 2f * aps,
+            Lightning = (lightningMin + lightningMax) / 2f * aps
+        };
     }
 
     private static WeaponDps CalculateDisplayedWeaponDps(Element? tooltip)
@@ -960,7 +703,12 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
         var elemental = (Average(fireRange) + Average(coldRange) +
                          Average(lightningRange)) * attacksPerSecond;
         var chaos = Average(chaosRange) * attacksPerSecond;
-        return new WeaponDps(physical + elemental + chaos, physical, elemental, chaos);
+        return new WeaponDps(physical + elemental + chaos, physical, elemental, chaos)
+        {
+            Fire = Average(fireRange) * attacksPerSecond,
+            Cold = Average(coldRange) * attacksPerSecond,
+            Lightning = Average(lightningRange) * attacksPerSecond
+        };
 
         (float Minimum, float Maximum) ReadDamageRange(string type)
         {
@@ -988,6 +736,11 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
         var text = string.Join("\n", EnumerateElements(tooltip)
             .Select(element => GetMemberString(element, "TextNoTags", "Text")));
 
+        return ParseDefenceText(CleanTranslation(text));
+    }
+
+    private static DefenceTotals ParseDefenceText(string text)
+    {
         return new DefenceTotals(
             ReadValue(@"\bArmour\s*:\s*([\d,]+)"),
             ReadValue(@"\bEvasion(?:\s+Rating)?\s*:\s*([\d,]+)"),
@@ -1129,7 +882,7 @@ internal sealed class ItemAnalyzer(LootLens2 plugin, ItemDatabase database)
             RegexOptions.IgnoreCase));
     }
 
-    private static string GetSlotName(string? path)
+    internal static string GetSlotName(string? path)
     {
         var value = (path ?? string.Empty).ToLowerInvariant();
         var compact = Regex.Replace(value, "[^a-z0-9]", string.Empty);

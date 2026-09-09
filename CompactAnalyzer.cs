@@ -12,12 +12,6 @@ public partial class LootLens2
     private void DrawAnalyzerPanel(ExileCore2.Shared.RectangleF tooltipRect,
         AnalyzedItem analysis)
     {
-        if (Settings.AnalyzerLayout == AnalyzerLayoutMode.Detailed)
-        {
-            DrawDetailedAnalyzerPanel(tooltipRect, analysis);
-            return;
-        }
-
         DrawCompactAnalyzerPanel(tooltipRect, analysis);
     }
 
@@ -36,33 +30,29 @@ public partial class LootLens2
             .Select(entry => entry.Mod)
             .ToList();
 
-        var width = Math.Max(tooltipRect.Width,
-            Math.Min(Settings.PanelWidth.Value * scale, display.X - 16f));
-        width = Math.Clamp(width, 340f * scale,
+        // LootLens keeps its own predictable width instead of inheriting
+        // unusually wide native item tooltips.
+        var width = Math.Clamp(Settings.PanelWidth.Value * scale,
+            340f * scale,
             Math.Max(340f * scale, display.X - 16f));
 
-        var topPadding = 3f * scale;
-        var metadataHeight = 21f * scale;
-        var rowHeight = 22f * scale;
+        var topPadding = 4f * scale;
+        if (!analysis.WeaponDps.IsWeapon && displayMods.Count > 0)
+            width = Math.Min(width, Math.Max(340f * scale,
+                displayMods.Max(mod => TextWidth(ShortenMinimalText(mod.Text), .70f * scale)) + 191f * scale));
+        var minimal = true;
+        var metadataHeight = minimal ? (analysis.WeaponDps.IsWeapon ? 42f * scale : 0f) : analysis.WeaponDps.IsWeapon
+            ? 48f * scale
+            : 27f * scale;
+        var rowHeight = (minimal ? 25f : 30f) * scale;
         var uniqueFooter = Settings.ShowOverallPerfection.Value &&
-                           analysis.OverallPerfection >= 0
-            ? 51f * scale
-            : 0f;
-
-        var qualificationCount = analysis.QualificationMatches.Count;
-        var qualifierColumns = Math.Min(4, Math.Max(1, qualificationCount));
-        var qualifierRows = qualificationCount == 0
-            ? 0
-            : (int)Math.Ceiling(qualificationCount /
-                                (double)qualifierColumns);
-        var qualificationFooter = Settings.ShowQualificationFooter.Value &&
-                                  analysis.RequiredQualificationMatches > 0
-            ? (22f + qualifierRows * 18f) * scale
+                           (analysis.OverallPerfection >= 0 || !string.IsNullOrEmpty(analysis.UniqueDropTier))
+            ? 28f * scale
             : 0f;
 
         var height = topPadding + metadataHeight +
                      displayMods.Count * rowHeight + uniqueFooter +
-                     qualificationFooter + 4f * scale;
+                     4f * scale;
         var gap = Settings.PanelGap.Value * scale;
         var x = Math.Clamp(tooltipRect.Left, 8f,
             Math.Max(8f, display.X - width - 8f));
@@ -78,39 +68,59 @@ public partial class LootLens2
             bottomRight - Vector2.One, true);
 
         var normal = Pack(235, 236, 239, 255);
-        var subdued = Pack(145, 149, 158, 255);
-        var mutedLine = Pack(105, 107, 112, 125);
+        var subdued = Pack(164, 168, 177, 255);
+        var mutedLine = Pack(128, 132, 141, 170);
         var cy = y + topPadding;
 
-        DrawCompactMetadata(draw, font, baseFont, x, cy, width, scale,
-            analysis, subdued, mutedLine);
+        if (minimal)
+        {
+            if (analysis.WeaponDps.IsWeapon)
+                DrawMinimalWeaponStrip(draw, font, baseFont, x, cy, width, scale, analysis.WeaponDps);
+        }
+        else
+            DrawCompactMetadata(draw, font, baseFont, x, cy, width, scale,
+                analysis, subdued, mutedLine);
         cy += metadataHeight;
 
         foreach (var mod in displayMods)
         {
-            DrawCompactModifierRow(draw, font, baseFont, x, cy, width,
-                rowHeight, scale, mod, subdued);
+            if (minimal)
+                DrawMinimalRow(draw, font, baseFont, x, cy, width, scale, mod);
+            else
+                DrawCompactModifierRow(draw, font, baseFont, x, cy, width,
+                    rowHeight, scale, mod, subdued);
             cy += rowHeight;
         }
 
         if (uniqueFooter > 0f)
         {
-            DrawCompactPerfectionFooter(draw, font, baseFont, x, cy, width,
-                scale, analysis, subdued, mutedLine);
+            DrawMinimalBottomLine(draw, font, baseFont, x, cy, width, scale,
+                analysis.OverallPerfection >= 0 ? $"PERFECTION {analysis.OverallPerfection}%" : "PERFECTION —",
+                string.IsNullOrEmpty(analysis.UniqueDropTier) ? "" : $"{analysis.UniqueDropTier} UNIQUE", subdued);
             cy += uniqueFooter;
         }
 
-        if (qualificationFooter > 0f)
-            DrawQualificationFooter(draw, font, baseFont, x, cy, width,
-                scale, analysis, normal, subdued, mutedLine);
-
         draw.PopClipRect();
+        if (ImGui.GetIO().KeyShift)
+        {
+            ImGui.BeginTooltip();
+            ImGui.PushTextWrapPos(ImGui.GetFontSize() * 32f);
+            foreach (var mod in displayMods)
+            {
+                ImGui.TextUnformatted(mod.Text);
+                ImGui.TextDisabled(mod.IsFixed ? "FIXED" : string.IsNullOrEmpty(mod.RangeText)
+                    ? "Range unavailable" : mod.RangeText + " · " + mod.RangeLabel);
+                ImGui.Spacing();
+            }
+            ImGui.PopTextWrapPos();
+            ImGui.EndTooltip();
+        }
     }
 
     private static void DrawCompactBackground(ImDrawListPtr draw,
         Vector2 topLeft, Vector2 bottomRight)
     {
-        draw.AddRectFilled(topLeft, bottomRight, Pack(0, 0, 0, 236));
+        draw.AddRectFilled(topLeft, bottomRight, Pack(0, 0, 0, 248));
     }
 
     private static void DrawCompactMetadata(ImDrawListPtr draw,
@@ -120,40 +130,84 @@ public partial class LootLens2
         var left = x + 14f * scale;
         var right = x + width - 14f * scale;
         var cursor = left;
-        var textScale = .48f * scale;
+        var metadataScale = .58f * scale;
+        var valueScale = (item.WeaponDps.IsWeapon ? .73f : .66f) * scale;
+        var metricLabelScale = .49f * scale;
         const string separator = "  |  ";
         var modCount = item.Mods.Count(mod =>
             !mod.IsImplicit && !mod.IsHidden);
         var metadata = $"iLvl {item.ItemLevel}  |  {modCount} " +
                        (modCount == 1 ? "Mod" : "Mods");
 
-        draw.AddText(font, baseFont * textScale,
-            new Vector2(cursor, y + 3f * scale), subdued, metadata);
-        cursor += TextWidth(metadata, textScale);
+        draw.AddText(font, baseFont * metadataScale,
+            new Vector2(cursor, y + 4f * scale), subdued, metadata);
+        cursor += TextWidth(metadata, metadataScale);
 
-        foreach (var metric in BuildCompactSummaryMetrics(item))
+        var metrics = BuildCompactSummaryMetrics(item);
+        if (item.WeaponDps.IsWeapon)
         {
-            var separatorWidth = TextWidth(separator, textScale);
+            var metricTop = y + 20f * scale;
+            var clusterWidth = Math.Min(right - left, 430f * scale);
+            var clusterLeft = left + (right - left - clusterWidth) / 2f;
+            var cellWidth = clusterWidth / Math.Max(1, metrics.Count);
+            for (var index = 0; index < metrics.Count; index++)
+            {
+                var metric = metrics[index];
+                var labelScale = .56f * scale;
+                var weaponValueScale = (index == metrics.Count - 1
+                    ? .92f
+                    : .84f) * scale;
+                var label = metric.Label + " ";
+                var groupWidth = TextWidth(label, labelScale) +
+                                 TextWidth(metric.Value, weaponValueScale);
+                var cellLeft = clusterLeft + index * cellWidth;
+                var groupLeft = cellLeft + (cellWidth - groupWidth) / 2f;
+                draw.AddText(font, baseFont * labelScale,
+                    new Vector2(groupLeft, metricTop + 4f * scale),
+                    index == metrics.Count - 1
+                        ? Pack(205, 209, 218, 255)
+                        : subdued, label);
+                draw.AddText(font, baseFont * weaponValueScale,
+                    new Vector2(groupLeft + TextWidth(label, labelScale),
+                        metricTop), metric.Color, metric.Value);
+
+                if (index > 0)
+                    draw.AddLine(new Vector2(cellLeft, metricTop + 2f * scale),
+                        new Vector2(cellLeft, metricTop + 17f * scale),
+                        Pack(105, 109, 118, 125),
+                        Math.Max(.65f, .7f * scale));
+            }
+
+            draw.AddLine(new Vector2(left, y + 45f * scale),
+                new Vector2(right, y + 45f * scale), mutedLine,
+                Math.Max(1f, scale * .65f));
+            return;
+        }
+
+        foreach (var metric in metrics)
+        {
+            var separatorWidth = TextWidth(separator, metadataScale);
             var label = metric.Label + " ";
-            var labelWidth = TextWidth(label, textScale);
-            var valueWidth = TextWidth(metric.Value, textScale);
+            var labelWidth = TextWidth(label, metricLabelScale);
+            var valueWidth = TextWidth(metric.Value, valueScale);
             if (cursor + separatorWidth + labelWidth + valueWidth > right)
                 break;
 
-            draw.AddText(font, baseFont * textScale,
-                new Vector2(cursor, y + 3f * scale), subdued, separator);
+            draw.AddText(font, baseFont * metadataScale,
+                new Vector2(cursor, y + 4f * scale), subdued, separator);
             cursor += separatorWidth;
-            draw.AddText(font, baseFont * textScale,
-                new Vector2(cursor, y + 3f * scale), subdued, label);
+            draw.AddText(font, baseFont * metricLabelScale,
+                new Vector2(cursor, y + 7f * scale), subdued, label);
             cursor += labelWidth;
-            draw.AddText(font, baseFont * textScale,
-                new Vector2(cursor, y + 3f * scale), metric.Color,
+            draw.AddText(font, baseFont * valueScale,
+                new Vector2(cursor, y + 2.5f * scale), metric.Color,
                 metric.Value);
             cursor += valueWidth;
         }
 
-        draw.AddLine(new Vector2(left, y + 18f * scale),
-            new Vector2(right, y + 18f * scale), mutedLine,
+        var dividerY = y + 24f * scale;
+        draw.AddLine(new Vector2(left, dividerY),
+            new Vector2(right, dividerY), mutedLine,
             Math.Max(1f, scale * .65f));
     }
 
@@ -167,7 +221,7 @@ public partial class LootLens2
                 Pack(215, 192, 156, 255)));
             metrics.Add(("EDPS", item.WeaponDps.Elemental.ToString("0.0"),
                 Pack(112, 165, 235, 255)));
-            metrics.Add(("DPS", item.WeaponDps.Total.ToString("0.0"),
+            metrics.Add(("TOTAL DPS", item.WeaponDps.Total.ToString("0.0"),
                 Pack(231, 233, 238, 255)));
             return metrics;
         }
@@ -202,12 +256,12 @@ public partial class LootLens2
             mod.IsCrafted ? Pack(92, 207, 220, 255) :
             mod.IsImplicit ? Pack(166, 170, 179, 255) :
             Settings.FullStatColors.Value ? statColor :
-            Pack(218, 220, 224, 255);
+            Pack(229, 231, 235, 255);
         var letterColor = mod.IsHidden || mod.IsUnique || mod.IsCrafted ||
                           mod.IsImplicit
             ? specialColor
-            : Pack(151, 154, 162, 255);
-        // Source styling stays on the letter/name. The accent and roll line
+            : Pack(170, 174, 183, 255);
+        // Source styling stays on the letter/name. The accent and underline
         // always describe the modifier's actual stat family.
         var accentColor = statColor;
         var uniqueLayout = mod.IsUnique;
@@ -218,76 +272,82 @@ public partial class LootLens2
                 mod.IsHidden ? "H" :
                 mod.IsImplicit ? "I" :
                 string.IsNullOrWhiteSpace(mod.Affix) ? "·" : mod.Affix;
-            draw.AddText(font, baseFont * .52f * scale,
-                new Vector2(x + 14f * scale, rowTop + 6f * scale),
+            var affixScale = .64f * scale;
+            draw.AddText(font, baseFont * affixScale,
+                new Vector2(x + 14f * scale,
+                    rowTop + 3.5f * scale),
                 letterColor, affixIndicator);
         }
 
         var accentX = x + (uniqueLayout ? 16f : 29f) * scale;
-        draw.AddLine(new Vector2(accentX, rowTop + 4f * scale),
-            new Vector2(accentX, rowTop + rowHeight - 4f * scale),
+        draw.AddLine(new Vector2(accentX, rowTop + 2f * scale),
+            new Vector2(accentX, rowTop + rowHeight - 3f * scale),
             accentColor, Math.Max(1.25f, 1.35f * scale));
 
         var right = x + width - 14f * scale;
         var rightLabel = GetCompactRightLabel(mod);
         var rightLabelScale = rightLabel.Length > 5
-            ? .42f * scale
-            : .53f * scale;
+            ? .54f * scale
+            : .68f * scale;
         var rightLabelWidth = TextWidth(rightLabel, rightLabelScale);
         if (!string.IsNullOrEmpty(rightLabel))
         {
             var labelColor = mod.Perfection < 0 && mod.IsUnique
                 ? subdued
-                : GetBadgeColor(mod);
+                : GetCompactRightLabelColor(mod);
             draw.AddText(font, baseFont * rightLabelScale,
                 new Vector2(right - rightLabelWidth,
-                    rowTop + 5f * scale), labelColor, rightLabel);
+                    rowTop + 4f * scale),
+                labelColor, rightLabel);
         }
 
-        var rollRight = string.IsNullOrEmpty(rightLabel)
-            ? right
-            : right - rightLabelWidth - 14f * scale;
-        var rollLeft = x + Math.Max(width * .53f, 190f * scale);
-        if (rollRight - rollLeft < 42f * scale)
-            rollLeft = rollRight - 42f * scale;
-
+        // The range and tier keep stable columns. Roll quality lives directly
+        // beneath the modifier text instead of in a separate slider region.
+        var tierColumnWidth = 68f * scale;
+        var rangeColumnWidth = Math.Clamp(width * .19f,
+            82f * scale, 110f * scale);
+        var tierLeft = right - tierColumnWidth;
         var textLeft = x + (uniqueLayout ? 27f : 40f) * scale;
-        var textRight = rollLeft - 12f * scale;
-        draw.AddText(font, baseFont * .66f * scale,
-            new Vector2(textLeft, rowTop + 4f * scale), textColor,
+        var underlineSpan = Math.Clamp(width * .48f,
+            150f * scale, 300f * scale);
+        var maximumRangeLeft = tierLeft - rangeColumnWidth;
+        var preferredRangeLeft = textLeft + underlineSpan + 12f * scale;
+        var rangeLeft = Math.Min(maximumRangeLeft, preferredRangeLeft);
+        var rangeRight = rangeLeft + rangeColumnWidth;
+        var availableTextRight = rangeLeft - 12f * scale;
+        var textRight = Math.Min(availableTextRight,
+            textLeft + underlineSpan);
+        var modifierScale = .78f * scale;
+        draw.AddText(font, baseFont * modifierScale,
+            new Vector2(textLeft, rowTop + 1.5f * scale), textColor,
             Ellipsize(displayText, Math.Max(70f, textRight - textLeft),
-                .66f * scale));
+                modifierScale));
 
         if (mod.Perfection < 0)
             return;
 
-        var rollY = rowTop + 11f * scale;
-        draw.AddLine(new Vector2(rollLeft, rollY),
-            new Vector2(rollRight, rollY), Pack(130, 134, 143, 210),
-            Math.Max(1.2f, 1.3f * scale));
-        var markerX = rollLeft + (rollRight - rollLeft) *
-            mod.Perfection / 100f;
-        draw.AddLine(new Vector2(rollLeft, rollY),
-            new Vector2(markerX, rollY), accentColor,
-            Math.Max(1.8f, 2f * scale));
-        DrawCompactDiamond(draw, new Vector2(markerX, rollY),
-            4.2f * scale, accentColor);
-    }
+        var range = CompactRollRange(mod.RangeText);
+        var rangeScale = .62f * scale;
+        var compactRange = Ellipsize(range, rangeColumnWidth, rangeScale);
+        var rangeWidth = TextWidth(compactRange, rangeScale);
+        draw.AddText(font, baseFont * rangeScale,
+            new Vector2(rangeRight - rangeWidth, rowTop + 5f * scale),
+            Pack(202, 206, 215, 255), compactRange);
 
-    private static void DrawCompactDiamond(ImDrawListPtr draw,
-        Vector2 center, float size, uint color)
-    {
-        var top = new Vector2(center.X, center.Y - size);
-        var right = new Vector2(center.X + size, center.Y);
-        var bottom = new Vector2(center.X, center.Y + size);
-        var left = new Vector2(center.X - size, center.Y);
-        draw.AddTriangleFilled(top, right, bottom, color);
-        draw.AddTriangleFilled(top, bottom, left, color);
-        var outline = Pack(238, 239, 242, 235);
-        draw.AddLine(top, right, outline, 1f);
-        draw.AddLine(right, bottom, outline, 1f);
-        draw.AddLine(bottom, left, outline, 1f);
-        draw.AddLine(left, top, outline, 1f);
+        var underlineY = rowTop + 24f * scale;
+        var underlineLeft = textLeft;
+        var underlineRight = Math.Max(underlineLeft + 36f * scale,
+            textRight);
+        draw.AddLine(new Vector2(underlineLeft, underlineY),
+            new Vector2(underlineRight, underlineY),
+            Pack(132, 137, 147, 235), Math.Max(1.35f, 1.5f * scale));
+        var underlineWidth = underlineRight - underlineLeft;
+        var filledWidth = Math.Min(underlineWidth,
+            Math.Max(6f * scale, underlineWidth * mod.Perfection / 100f));
+        var filledRight = underlineLeft + filledWidth;
+        draw.AddLine(new Vector2(underlineLeft, underlineY),
+            new Vector2(filledRight, underlineY), accentColor,
+            Math.Max(2.4f, 2.8f * scale));
     }
 
     private static string GetCompactRightLabel(AnalyzedMod mod)
@@ -305,6 +365,22 @@ public partial class LootLens2
                 ? $"T{mod.Tier}/{mod.TotalTiers}"
                 : $"T{mod.Tier}"
             : string.Empty;
+    }
+
+    private static uint GetCompactRightLabelColor(AnalyzedMod mod)
+    {
+        if (mod.IsHidden) return Pack(210, 145, 77, 255);
+        if (mod.IsUnique) return Pack(220, 127, 68, 255);
+        if (mod.IsImplicit) return Pack(181, 186, 196, 255);
+        if (mod.IsCrafted) return Pack(92, 212, 225, 255);
+        return mod.Tier switch
+        {
+            1 => Pack(244, 201, 73, 255),
+            2 => Pack(99, 222, 142, 255),
+            3 => Pack(75, 202, 216, 255),
+            4 => Pack(161, 174, 189, 255),
+            _ => Pack(153, 158, 168, 255)
+        };
     }
 
     private static void DrawCompactPerfectionFooter(ImDrawListPtr draw,
@@ -331,12 +407,11 @@ public partial class LootLens2
         var barY = y + 26f * scale;
         draw.AddLine(new Vector2(left, barY), new Vector2(right, barY),
             Pack(112, 115, 122, 205), Math.Max(1f, scale));
-        var markerX = left + (right - left) *
+        var filledRight = left + (right - left) *
             analysis.OverallPerfection / 100f;
-        draw.AddLine(new Vector2(left, barY), new Vector2(markerX, barY),
-            scoreColor, Math.Max(1.5f, 1.7f * scale));
-        DrawCompactDiamond(draw, new Vector2(markerX, barY),
-            3.8f * scale, scoreColor);
+        draw.AddLine(new Vector2(left, barY),
+            new Vector2(filledRight, barY), scoreColor,
+            Math.Max(1.6f, 1.8f * scale));
 
         var rollText = $"{analysis.VariableRollCount} " +
                        (analysis.VariableRollCount == 1 ? "Roll" : "Rolls") +
@@ -375,6 +450,8 @@ public partial class LootLens2
         Rewrite(@"(?<=\d)\s+to\s+(?=[+-]?\d)", "-");
         Rewrite(@"\bPhysical Damage Leeched as Life\b", "Phys Life Leech");
         Rewrite(@"\bPhysical Damage Leeched as Mana\b", "Phys Mana Leech");
+        Rewrite(@"\bElemental Damage with Attack Skills\b", "Ele Attack Dmg");
+        Rewrite(@"\bElemental Damage with Attacks\b", "Ele Attack Dmg");
         Rewrite(@"\bAll Elemental Resistances\b", "All Ele Res");
         Rewrite(@"\bFire Resistance\b", "Fire Res");
         Rewrite(@"\bCold Resistance\b", "Cold Res");
