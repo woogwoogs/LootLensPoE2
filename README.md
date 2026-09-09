@@ -11,6 +11,13 @@ A compact item mod analyzer for **ExileCore2 / Path of Exile 2**.
 - Adjustable text size, colours, and panel placement.
 - **Hold** a hotkey to view the analyzer, or use **Always** mode.
 
+## Roll ranges
+
+**Current Tier** shows how the roll compares within its own tier. **All Tiers** compares it against the full range across valid tiers for that item base.
+
+<img width="1612" height="1425" alt="roll-range-options" src="https://github.com/user-attachments/assets/3e76b608-9169-429b-b20e-9aa8395add95" />
+
+
 ## New: Tier markers
 
 Small diamonds let you spot high-tier mods directly on items without hovering.
@@ -20,12 +27,5 @@ Small diamonds let you spot high-tier mods directly on items without hovering.
 - Adjustable colours and size (default: **12**).
 - Enabled for inventory, stash, vendors, Ritual, and other supported item windows. Equipped gear is optional.
 
-## Roll ranges
+<img width="305" height="148" alt="combined" src="https://github.com/user-attachments/assets/ef7f85a8-b491-4086-a892-073b4ec8e8ff" />
 
-**Current Tier** shows how the roll compares within its own tier. **All Tiers** compares it against the full range across valid tiers for that item base.
-
-![Roll range options: sliders and numbers, current tier and all tiers](docs/roll-range-options.png)
-
-## Install
-
-Place the `LootLens2` folder in `ExileCore2/Plugins/Source`, replacing the previous folder if updating. Enable the plugin and adjust its settings. The default analyzer hotkey is **F8**.
